@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/api_key.txt
+data/learned_ingredients.json
+temp_*.xlsx
+build_ingredient_db.py
