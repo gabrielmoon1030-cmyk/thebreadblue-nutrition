@@ -1,7 +1,8 @@
 """
-배합비 Excel 파서
+배합비 파서 (Excel + Word)
 - 배합비 폴더에서 원재료명 + 투입량(g) 자동 추출
 - 다양한 엑셀 형식 대응 (레시피/원가 파일)
+- Word(.docx) 배합비율표 지원
 """
 import re
 import openpyxl
@@ -142,6 +143,108 @@ def parse_all_recipes():
         # 나중에 파싱된 것이 더 최근 → 덮어쓰기
 
     return list(seen.values())
+
+
+def parse_docx_file(filepath, total_weight_g=None):
+    """Word(.docx) 배합비율표에서 (제품명, [(원재료, 투입량g), ...]) 추출
+
+    docx는 보통 배합비율(%)로 되어 있으므로 total_weight_g가 필요.
+    파일명에서 중량을 자동 추출 시도 (예: '치즈케이크 520g').
+    """
+    from docx import Document
+
+    if isinstance(filepath, (str, Path)):
+        doc = Document(filepath)
+        filename = Path(filepath).stem
+    else:
+        # BytesIO (Streamlit 업로드)
+        doc = Document(filepath)
+        filename = getattr(filepath, 'name', 'unknown').replace('.docx', '')
+
+    # 파일명에서 총 중량 추출 (예: "치즈케이크 520g")
+    if total_weight_g is None:
+        wt_match = re.search(r'(\d+)\s*[gG]', filename)
+        if wt_match:
+            total_weight_g = float(wt_match.group(1))
+
+    # 제품명 추출 (파일명에서)
+    product_name = re.sub(r'\d+\.\s*', '', filename)  # "2. 원료성분 및 배합비율(치즈케이크 520g)" → 정리
+    name_match = re.search(r'[((](.+?)\s*\d*\s*[gG]?\s*[))]', filename)
+    if name_match:
+        product_name = name_match.group(1).strip()
+    else:
+        product_name = re.sub(r'원료성분\s*(및|&)?\s*배합비율\s*', '', product_name).strip()
+        if not product_name:
+            product_name = filename
+
+    results = []
+
+    for table in doc.tables:
+        ingredients = []
+        name_col = None
+        ratio_col = None
+        is_percentage = False
+
+        # 헤더 행에서 컬럼 위치 찾기
+        header_cells = [cell.text.strip() for cell in table.rows[0].cells]
+        for idx, header in enumerate(header_cells):
+            if '원재료' in header or '원료' in header:
+                name_col = idx
+            if '배합비율' in header or '비율' in header or '%' in header:
+                ratio_col = idx
+                is_percentage = True
+            if '투입량' in header or '중량' in header or '배합량' in header:
+                ratio_col = idx
+                is_percentage = False
+
+        if name_col is None or ratio_col is None:
+            continue
+
+        # 데이터 행 읽기
+        for row in table.rows[1:]:
+            cells = [cell.text.strip() for cell in row.cells]
+            name = cells[name_col] if name_col < len(cells) else ''
+            value_str = cells[ratio_col] if ratio_col < len(cells) else ''
+
+            if not name or len(name) < 2:
+                continue
+            if any(k in name for k in ['합계', '합 계', '소계', '총합', '계']):
+                continue
+
+            # 숫자 파싱
+            value_str = value_str.replace(',', '')
+            match = re.search(r'[\d.]+', value_str)
+            if not match:
+                continue
+            value = float(match.group())
+            if value <= 0:
+                continue
+
+            # %이면 g로 변환
+            if is_percentage and total_weight_g:
+                qty_g = value / 100 * total_weight_g
+            elif is_percentage:
+                # 총 중량 모르면 100g 기준으로 계산
+                qty_g = value  # 비율 그대로 (100g 기준)
+            else:
+                qty_g = value
+
+            norm_name = normalize_name(name)
+            ingredients.append((norm_name, round(qty_g, 2)))
+
+        if ingredients:
+            actual_total = total_weight_g if total_weight_g else sum(q for _, q in ingredients)
+            results.append({
+                "product_name": product_name,
+                "sheet_name": "본문",
+                "file": str(filepath) if isinstance(filepath, (str, Path)) else filename,
+                "ingredients": ingredients,
+                "total_weight": actual_total,
+                "is_percentage": is_percentage,
+                "source_weight_g": total_weight_g,
+            })
+
+    return results
 
 
 if __name__ == "__main__":

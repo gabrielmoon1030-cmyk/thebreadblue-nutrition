@@ -11,7 +11,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 from ingredient_db import INGREDIENT_DB, NUTRIENT_KEYS, NUTRIENT_LABELS, normalize_name, get_nutrient
-from recipe_parser import parse_all_recipes, parse_recipe_file
+from recipe_parser import parse_all_recipes, parse_recipe_file, parse_docx_file
 from calculator import calculate_nutrition
 from auto_lookup import lookup_ingredient, add_learned_ingredient, load_learned_db, find_similar_ingredients, get_api_key, save_api_key
 from food_db_extended import EXTENDED_DB
@@ -277,13 +277,13 @@ with st.sidebar.expander("⚙️ 식약처 API 설정"):
 # ============================================================
 if mode == "📤 배합비 파일 업로드 (신제품)":
     st.header("배합비 파일 업로드")
-    st.info("배합비 Excel 파일을 드래그앤드롭하세요. 기존 배합비 양식 그대로 사용 가능합니다.")
+    st.info("배합비 파일을 드래그앤드롭하세요. Excel(.xlsx) 또는 Word(.docx) 모두 지원합니다.")
 
     uploaded_files = st.file_uploader(
-        "배합비 Excel 파일 (여러 개 가능)",
-        type=["xlsx", "xls"],
+        "배합비 파일 (여러 개 가능)",
+        type=["xlsx", "xls", "docx"],
         accept_multiple_files=True,
-        help="A열: 원재료명, B열(또는 '1배합'열): 투입량(g)"
+        help="Excel: A열 원재료명, B열 투입량(g) / Word: 원재료명+배합비율(%) 표"
     )
 
     if uploaded_files:
@@ -292,14 +292,29 @@ if mode == "📤 배합비 파일 업로드 (신제품)":
             st.subheader(f"📄 {uploaded_file.name}")
 
             try:
-                recipes = parse_uploaded_file(uploaded_file)
+                if uploaded_file.name.endswith('.docx'):
+                    # Word 파일: 배합비율(%) 표 파싱
+                    docx_weight = None
+                    # 파일명에서 중량 추출 시도
+                    wt_m = re.search(r'(\d+)\s*[gG]', uploaded_file.name)
+                    if wt_m:
+                        docx_weight = float(wt_m.group(1))
+                    else:
+                        docx_weight = st.number_input(
+                            "제품 총 중량 (g) — 배합비율(%)을 g으로 환산하는 데 필요",
+                            min_value=1, value=100, step=10,
+                            key=f"docx_wt_{uploaded_file.name}"
+                        )
+                    recipes = parse_docx_file(io.BytesIO(uploaded_file.read()), total_weight_g=docx_weight)
+                else:
+                    recipes = parse_uploaded_file(uploaded_file)
             except Exception as e:
                 st.error(f"파일 파싱 실패: {e}")
                 continue
 
             if not recipes:
                 st.warning("원재료 데이터를 찾을 수 없습니다. 파일 양식을 확인해주세요.")
-                st.caption("필요 양식: A열 = 원재료명, B열 = 투입량(g), '원재료' 헤더 행 필요")
+                st.caption("Excel: A열 = 원재료명, B열 = 투입량(g) / Word: 원재료명+배합비율(%) 표")
                 continue
 
             # 레시피별 결과 표시 함수
@@ -362,14 +377,14 @@ if mode == "📤 배합비 파일 업로드 (신제품)":
         # 업로드 전 안내
         st.markdown("""
         ### 사용 방법
-        1. 위 업로드 영역에 **배합비 Excel 파일**을 드래그앤드롭
+        1. 위 업로드 영역에 **배합비 파일**을 드래그앤드롭
         2. 자동으로 원재료와 투입량을 인식
         3. **9대 영양성분** 즉시 계산
 
         ### 지원하는 파일 형식
+        - **Excel (.xlsx)**: A열 원재료명, B열 투입량(g), '원재료' 헤더 행 필요
+        - **Word (.docx)**: 원재료명 + 배합비율(%) 표 (파일명에 중량 포함 시 자동 환산)
         - 기존 품질팀 배합비 양식 그대로 사용 가능
-        - A열: 원재료명, B열(또는 '1배합' 열): 투입량(g)
-        - '원재료' 텍스트가 포함된 헤더 행 필요
         - 여러 파일 동시 업로드 가능
         """)
 
